@@ -1,0 +1,946 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<title>Task Editor</title>
+<style>
+  /* ====== Theme ====== */
+  :root, [data-theme="dark"] {
+    --bg: #1e1e1e;
+    --bg-elev: #252525;
+    --fg: #d4d4d4;
+    --fg-dim: #888;
+    --accent: #4ea1ff;
+    --border: #333;
+    --task: #f0d060;
+    --indent-guide: rgba(255,255,255,0.05);
+    --btn-bg: #2d2d2d;
+    --btn-hover: #3a3a3a;
+    --drop-border: #555;
+    --drop-bg: rgba(255,255,255,0.02);
+    --shadow: 0 6px 24px rgba(0,0,0,0.5);
+  }
+  [data-theme="light"] {
+    --bg: #fafafa;
+    --bg-elev: #fff;
+    --fg: #222;
+    --fg-dim: #888;
+    --accent: #1a6fd4;
+    --border: #ddd;
+    --task: #b07b00;
+    --indent-guide: rgba(0,0,0,0.06);
+    --btn-bg: #fff;
+    --btn-hover: #f0f0f0;
+    --drop-border: #bbb;
+    --drop-bg: rgba(0,0,0,0.02);
+    --shadow: 0 6px 24px rgba(0,0,0,0.12);
+  }
+
+  * { box-sizing: border-box; }
+  html, body { height: 100%; margin: 0; padding: 0; overflow: hidden; }
+  body {
+    background: var(--bg);
+    color: var(--fg);
+    font-family: ui-monospace, "SF Mono", "Cascadia Mono", "Menlo", "Consolas", "MS Gothic", monospace;
+    font-size: 15px;
+    line-height: 1.7;
+    transition: background 0.2s, color 0.2s;
+  }
+
+  /* ====== Editor stack ====== */
+  .editor-wrap {
+    position: absolute; inset: 0;
+    padding: 32px 48px 80px 48px;
+    overflow: auto;
+  }
+  .editor-stack {
+    position: relative;
+    min-height: 100%;
+    max-width: 980px;
+    margin: 0 auto;
+  }
+  #preview, #editor {
+    font: inherit;
+    line-height: inherit;
+    padding: 0;
+    margin: 0;
+    border: 0;
+    outline: 0;
+    width: 100%;
+    background: transparent;
+    white-space: pre-wrap;
+    word-wrap: break-word;
+    overflow-wrap: break-word;
+    tab-size: 4;
+  }
+  #preview {
+    position: absolute;
+    inset: 0;
+    pointer-events: none;
+    color: var(--fg);
+    z-index: 2;
+    user-select: none;
+    display: block;
+  }
+  #preview .toggle, #preview .link { pointer-events: auto; }
+
+  #editor {
+    position: relative;
+    z-index: 1;
+    color: transparent;
+    caret-color: var(--fg);
+    resize: none;
+    min-height: 100%;
+  }
+  #editor::selection { background: rgba(78,161,255,0.35); color: transparent; }
+
+  /* Token styles in preview — colors only, no font-weight, to keep glyph metrics identical to textarea */
+  .task-mark { color: var(--task); }
+  .toggle {
+    cursor: pointer;
+    color: var(--fg-dim);
+    user-select: none;
+    transition: color 0.15s;
+  }
+  .toggle:hover { color: var(--accent); }
+  .row {
+    white-space: pre-wrap;
+    word-wrap: break-word;
+    overflow-wrap: break-word;
+    min-height: 1.7em;
+  }
+  .link {
+    color: var(--accent);
+    text-decoration: underline;
+    cursor: pointer;
+  }
+  .folded-row { display: none; }
+
+  /* ====== Drop overlay ====== */
+  .drop-overlay {
+    position: absolute;
+    inset: 32px 48px 80px 48px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    pointer-events: none;
+    z-index: 10;
+  }
+  .drop-overlay.active { pointer-events: auto; }
+  .drop-zone {
+    border: 2px dashed var(--drop-border);
+    border-radius: 12px;
+    padding: 60px 80px;
+    text-align: center;
+    color: var(--fg-dim);
+    background: var(--drop-bg);
+    max-width: 540px;
+    transition: all 0.2s;
+  }
+  .drop-zone.dragover {
+    border-color: var(--accent);
+    color: var(--accent);
+    background: rgba(78,161,255,0.05);
+  }
+  .drop-zone h2 { margin: 0 0 8px 0; font-weight: 500; font-size: 18px; }
+  .drop-zone p { margin: 4px 0; font-size: 13px; opacity: 0.7; }
+  .drop-zone .sub { font-size: 12px; opacity: 0.5; margin-top: 16px; }
+
+  /* ====== Right-bottom controls ====== */
+  .controls {
+    position: fixed;
+    right: 20px;
+    bottom: 20px;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    z-index: 100;
+  }
+  .ctrl-btn {
+    width: 44px; height: 44px;
+    border-radius: 50%;
+    background: var(--btn-bg);
+    border: 1px solid var(--border);
+    color: var(--fg);
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 18px;
+    box-shadow: var(--shadow);
+    transition: background 0.15s, transform 0.1s;
+    font-family: inherit;
+  }
+  .ctrl-btn:hover { background: var(--btn-hover); }
+  .ctrl-btn:active { transform: scale(0.95); }
+  .ctrl-btn.saving { color: var(--accent); }
+
+  /* ====== Toast ====== */
+  .toast {
+    position: fixed;
+    right: 20px;
+    bottom: 200px;
+    background: var(--bg-elev);
+    border: 1px solid var(--border);
+    color: var(--fg);
+    padding: 8px 14px;
+    border-radius: 8px;
+    font-size: 12px;
+    box-shadow: var(--shadow);
+    opacity: 0;
+    transform: translateY(8px);
+    transition: opacity 0.2s, transform 0.2s;
+    pointer-events: none;
+    z-index: 200;
+    max-width: 280px;
+  }
+  .toast.show { opacity: 1; transform: translateY(0); }
+  .toast.error { border-color: #c44; color: #f88; }
+
+  /* ====== Status bar ====== */
+  .status {
+    position: fixed;
+    left: 20px;
+    bottom: 20px;
+    font-size: 11px;
+    color: var(--fg-dim);
+    background: var(--bg-elev);
+    border: 1px solid var(--border);
+    padding: 6px 12px;
+    border-radius: 6px;
+    z-index: 100;
+    max-width: calc(100vw - 200px);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+</style>
+</head>
+<body data-theme="dark">
+
+<div class="editor-wrap" id="editorWrap">
+  <div class="editor-stack">
+    <div id="preview"></div>
+    <textarea id="editor" spellcheck="false" autocomplete="off" autocorrect="off" autocapitalize="off"></textarea>
+  </div>
+</div>
+
+<div class="drop-overlay active" id="dropOverlay">
+  <div class="drop-zone" id="dropZone">
+    <h2>📄 .txt をドロップ</h2>
+    <p>または、ここに直接書き始めてください</p>
+    <p class="sub">★☆●○■□◆◇▲△▽▼・ で始めるとタスクになります</p>
+  </div>
+</div>
+
+<div class="status" id="status">未保存</div>
+
+<div class="controls">
+  <button class="ctrl-btn" id="btnSave" title="保存 (Ctrl/Cmd+S)">💾</button>
+  <button class="ctrl-btn" id="btnTheme" title="ライト/ダーク切替">🌓</button>
+  <button class="ctrl-btn" id="btnFolder" title="保存先フォルダ">📁</button>
+</div>
+
+<div class="toast" id="toast"></div>
+
+<script>
+(() => {
+  'use strict';
+
+  // ============================================================
+  // Constants
+  // ============================================================
+  const TASK_SYMBOLS = ['★','☆','●','○','■','□','◆','◇','▲','△','▽','▼','・'];
+  const FOLD_OPEN  = '▼';
+  const FOLD_CLOSE = '▶︎';
+  const FOLD_CLOSE_ALT = '▶';
+  const FULL_SPACE = '\u3000';
+  const URL_RE = /(https?:\/\/[^\s\u3000]+)/g;
+  const AUTOSAVE_INTERVAL_MS = 60 * 1000;
+  const DB_NAME = 'taskeditor';
+  const DB_STORE = 'handles';
+
+  // ============================================================
+  // DOM refs
+  // ============================================================
+  const $editor = document.getElementById('editor');
+  const $preview = document.getElementById('preview');
+  const $wrap = document.getElementById('editorWrap');
+  const $dropOverlay = document.getElementById('dropOverlay');
+  const $dropZone = document.getElementById('dropZone');
+  const $status = document.getElementById('status');
+  const $toast = document.getElementById('toast');
+  const $btnSave = document.getElementById('btnSave');
+  const $btnTheme = document.getElementById('btnTheme');
+  const $btnFolder = document.getElementById('btnFolder');
+
+  // ============================================================
+  // State
+  // ============================================================
+  const state = {
+    currentFileName: null,
+    baseDirHandle: null,
+    lastSavedContent: '',
+    lastAutoSavedContent: '',
+    autosaveTimer: null,
+    fsApiAvailable: typeof window.showDirectoryPicker === 'function',
+    fallbackMode: false,
+    theme: localStorage.getItem('theme') || 'dark',
+  };
+
+  // ============================================================
+  // Utilities
+  // ============================================================
+  const pad = (n, w=2) => String(n).padStart(w, '0');
+  function nowStamp() {
+    const d = new Date();
+    return `${d.getFullYear()}${pad(d.getMonth()+1)}${pad(d.getDate())}-${pad(d.getHours())}${pad(d.getMinutes())}${pad(d.getSeconds())}`;
+  }
+  function dateFolders() {
+    const d = new Date();
+    return {
+      ym: `${d.getFullYear()}${pad(d.getMonth()+1)}`,
+      day: pad(d.getDate()),
+      ymd: `${d.getFullYear()}${pad(d.getMonth()+1)}${pad(d.getDate())}`,
+    };
+  }
+  function escapeHtml(s) {
+    return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+  }
+
+  let toastTimer = null;
+  function toast(msg, isError=false) {
+    $toast.textContent = msg;
+    $toast.classList.toggle('error', isError);
+    $toast.classList.add('show');
+    clearTimeout(toastTimer);
+    toastTimer = setTimeout(() => $toast.classList.remove('show'), 2400);
+  }
+
+  function setStatus(msg) { $status.textContent = msg; }
+
+  // ============================================================
+  // IndexedDB
+  // ============================================================
+  function idbOpen() {
+    return new Promise((resolve, reject) => {
+      const req = indexedDB.open(DB_NAME, 1);
+      req.onupgradeneeded = () => req.result.createObjectStore(DB_STORE);
+      req.onsuccess = () => resolve(req.result);
+      req.onerror = () => reject(req.error);
+    });
+  }
+  async function idbSet(key, val) {
+    const db = await idbOpen();
+    return new Promise((resolve, reject) => {
+      const tx = db.transaction(DB_STORE, 'readwrite');
+      tx.objectStore(DB_STORE).put(val, key);
+      tx.oncomplete = () => resolve();
+      tx.onerror = () => reject(tx.error);
+    });
+  }
+  async function idbGet(key) {
+    const db = await idbOpen();
+    return new Promise((resolve, reject) => {
+      const tx = db.transaction(DB_STORE, 'readonly');
+      const req = tx.objectStore(DB_STORE).get(key);
+      req.onsuccess = () => resolve(req.result);
+      req.onerror = () => reject(req.error);
+    });
+  }
+
+  // ============================================================
+  // Line parsing
+  // インデント数(全角スペース数)を数え、その後に記号があればネストタスク。
+  // インデントだけ or インデント+任意文字 (記号でない) は説明行。
+  // ============================================================
+  function parseLine(line) {
+    let indent = 0;
+    while (indent < line.length && line[indent] === FULL_SPACE) indent++;
+    const afterIndent = line.slice(indent);
+
+    if (afterIndent.length > 0 && TASK_SYMBOLS.includes(afterIndent[0])) {
+      let i = 0;
+      while (i < afterIndent.length && TASK_SYMBOLS.includes(afterIndent[i])) i++;
+      const marks = afterIndent.slice(0, i);
+      const rest = afterIndent.slice(i);
+      let openClose = null;
+      let body = rest;
+      const closeRegex = new RegExp(`${FULL_SPACE}(${FOLD_CLOSE}|${FOLD_CLOSE_ALT})$`);
+      const openRegex = new RegExp(`${FULL_SPACE}${FOLD_OPEN}$`);
+      const closeM = rest.match(closeRegex);
+      const openM = rest.match(openRegex);
+      if (closeM) {
+        openClose = 'close';
+        body = rest.slice(0, rest.length - closeM[0].length);
+      } else if (openM) {
+        openClose = 'open';
+        body = rest.slice(0, rest.length - openM[0].length);
+      }
+      return { kind: 'task', indent, marks, body, openClose, raw: line };
+    }
+
+    if (indent > 0) {
+      return { kind: 'indent', indent, raw: line };
+    }
+
+    return { kind: line.length === 0 ? 'blank' : 'text', indent: 0, raw: line };
+  }
+
+  function lineHasChild(parsed, i) {
+    const p = parsed[i];
+    if (p.kind !== 'task') return false;
+    const next = parsed[i + 1];
+    if (!next) return false;
+    if (next.kind === 'blank' || next.kind === 'text') return false;
+    return next.indent > p.indent;
+  }
+
+  function parseDocument(text) {
+    const lines = text.split('\n');
+    const parsed = lines.map(parseLine);
+    for (let i = 0; i < parsed.length; i++) {
+      if (parsed[i].kind === 'task') {
+        parsed[i].hasChild = lineHasChild(parsed, i);
+      }
+    }
+    return parsed;
+  }
+
+  // ============================================================
+  // Auto-add fold marker (▼) with cursor tracking
+  // ============================================================
+  function applyAutoMarkers(text, cursor) {
+    const lines = text.split('\n');
+    const parsed = lines.map(parseLine);
+    let cursorOut = cursor;
+    let lineStart = 0;
+    for (let i = 0; i < parsed.length; i++) {
+      const p = parsed[i];
+      const origLineLen = lines[i].length;
+      const lineEnd = lineStart + origLineLen;
+      if (p.kind === 'task') {
+        const hasChild = lineHasChild(parsed, i);
+        if (hasChild && p.openClose === null) {
+          const insert = FULL_SPACE + FOLD_OPEN;
+          lines[i] = p.raw + insert;
+          if (cursorOut !== undefined && cursorOut > lineEnd) {
+            cursorOut += insert.length;
+          }
+        } else if (!hasChild && p.openClose === 'open') {
+          const re = new RegExp(`${FULL_SPACE}${FOLD_OPEN}$`);
+          const before = lines[i];
+          const after = before.replace(re, '');
+          const removed = before.length - after.length;
+          lines[i] = after;
+          if (cursorOut !== undefined && cursorOut > lineEnd) {
+            cursorOut -= removed;
+          } else if (cursorOut !== undefined && cursorOut > lineStart + after.length) {
+            cursorOut = lineStart + after.length;
+          }
+        }
+      }
+      lineStart = lineEnd + 1;
+    }
+    return { text: lines.join('\n'), cursor: cursorOut };
+  }
+
+  // ============================================================
+  // Render preview
+  // ============================================================
+  function renderPreview(text) {
+    const parsed = parseDocument(text);
+    const hidden = new Array(parsed.length).fill(false);
+    for (let i = 0; i < parsed.length; i++) {
+      const p = parsed[i];
+      if (p.kind === 'task' && p.openClose === 'close') {
+        const myIndent = p.indent;
+        for (let j = i + 1; j < parsed.length; j++) {
+          const np = parsed[j];
+          if (np.kind === 'blank' || np.kind === 'text') break;
+          if (np.indent > myIndent) hidden[j] = true;
+          else break;
+        }
+      }
+    }
+    const htmlLines = parsed.map((p, i) => {
+      const hide = hidden[i] ? ' folded-row' : '';
+      let inner = '';
+      if (p.kind === 'task') {
+        const indentStr = p.raw.slice(0, p.indent);
+        inner = escapeHtml(indentStr) + `<span class="task-mark">${escapeHtml(p.marks)}</span>` + renderInline(p.body);
+        if (p.openClose === 'open') {
+          inner += escapeHtml(FULL_SPACE) + `<span class="toggle" data-line="${i}" data-action="close">${FOLD_OPEN}</span>`;
+        } else if (p.openClose === 'close') {
+          inner += escapeHtml(FULL_SPACE) + `<span class="toggle" data-line="${i}" data-action="open">${FOLD_CLOSE}</span>`;
+        }
+      } else if (p.kind === 'indent') {
+        inner = renderInline(p.raw);
+      } else if (p.kind === 'blank') {
+        inner = '';
+      } else {
+        inner = renderInline(p.raw);
+      }
+      return `<div class="row${hide}">${inner || '\u200b'}</div>`;
+    });
+    $preview.innerHTML = htmlLines.join('');
+  }
+
+  function renderInline(s) {
+    if (!s) return '';
+    let result = '';
+    let lastIndex = 0;
+    URL_RE.lastIndex = 0;
+    let m;
+    while ((m = URL_RE.exec(s)) !== null) {
+      result += escapeHtml(s.slice(lastIndex, m.index));
+      const url = m[0];
+      result += `<span class="link" data-url="${escapeHtml(url)}">${escapeHtml(url)}</span>`;
+      lastIndex = m.index + url.length;
+    }
+    result += escapeHtml(s.slice(lastIndex));
+    return result;
+  }
+
+  // ============================================================
+  // Fold operations
+  // ============================================================
+  const foldedSections = [];
+
+  function countClosedTasksBefore(lines, beforeIndex) {
+    let n = 0;
+    for (let k = 0; k < beforeIndex; k++) {
+      const p = parseLine(lines[k]);
+      if (p.kind === 'task' && p.openClose === 'close') n++;
+    }
+    return n;
+  }
+
+  function toggleFold(lineIndex) {
+    const text = $editor.value;
+    const lines = text.split('\n');
+    if (lineIndex < 0 || lineIndex >= lines.length) return;
+    const parsedLine = parseLine(lines[lineIndex]);
+    if (parsedLine.kind !== 'task') return;
+    const myIndent = parsedLine.indent;
+
+    if (parsedLine.openClose === 'open') {
+      const children = [];
+      let j = lineIndex + 1;
+      while (j < lines.length) {
+        const np = parseLine(lines[j]);
+        if (np.kind === 'blank' || np.kind === 'text') break;
+        if (np.indent > myIndent) {
+          children.push(lines[j]);
+          j++;
+        } else break;
+      }
+      const insertIdx = countClosedTasksBefore(lines, lineIndex);
+      foldedSections.splice(insertIdx, 0, children);
+      const re = new RegExp(`${FULL_SPACE}${FOLD_OPEN}$`);
+      const newParent = lines[lineIndex].replace(re, FULL_SPACE + FOLD_CLOSE);
+      const newLines = lines.slice(0, lineIndex).concat([newParent], lines.slice(j));
+      setEditorValue(newLines.join('\n'), { keepCursor: true });
+    } else if (parsedLine.openClose === 'close') {
+      const closeIdx = countClosedTasksBefore(lines, lineIndex);
+      const children = foldedSections[closeIdx] || [];
+      foldedSections.splice(closeIdx, 1);
+      const re = new RegExp(`${FULL_SPACE}${FOLD_CLOSE}$`);
+      const newParent = lines[lineIndex].replace(re, FULL_SPACE + FOLD_OPEN);
+      const newLines = lines.slice(0, lineIndex).concat([newParent], children, lines.slice(lineIndex + 1));
+      setEditorValue(newLines.join('\n'), { keepCursor: true });
+    }
+  }
+
+  function getFullContent() {
+    const lines = $editor.value.split('\n');
+    let foldIdx = 0;
+    const out = [];
+    for (let i = 0; i < lines.length; i++) {
+      out.push(lines[i]);
+      const p = parseLine(lines[i]);
+      if (p.kind === 'task' && p.openClose === 'close') {
+        const children = foldedSections[foldIdx];
+        if (children) out.push(...children);
+        foldIdx++;
+      }
+    }
+    return out.join('\n');
+  }
+
+  function ingestFoldedFromText(rawText) {
+    foldedSections.length = 0;
+    const lines = rawText.split('\n');
+    const visible = [];
+    for (let i = 0; i < lines.length; i++) {
+      const p = parseLine(lines[i]);
+      visible.push(lines[i]);
+      if (p.kind === 'task' && p.openClose === 'close') {
+        const myIndent = p.indent;
+        const children = [];
+        let j = i + 1;
+        while (j < lines.length) {
+          const np = parseLine(lines[j]);
+          if (np.kind === 'blank' || np.kind === 'text') break;
+          if (np.indent > myIndent) {
+            children.push(lines[j]);
+            j++;
+          } else break;
+        }
+        if (children.length > 0) {
+          foldedSections.push(children);
+          i = j - 1;
+        }
+      }
+    }
+    return visible.join('\n');
+  }
+
+  // ============================================================
+  // Editor handlers
+  // ============================================================
+  function setEditorValue(newVal, opts = {}) {
+    const { keepCursor = false } = opts;
+    const selStart = $editor.selectionStart;
+    const selEnd = $editor.selectionEnd;
+    $editor.value = newVal;
+    if (keepCursor) {
+      $editor.selectionStart = Math.min(selStart, newVal.length);
+      $editor.selectionEnd = Math.min(selEnd, newVal.length);
+    }
+    onTextChanged();
+  }
+
+  function onTextChanged() {
+    const original = $editor.value;
+    const origStart = $editor.selectionStart;
+    const origEnd = $editor.selectionEnd;
+    const result = applyAutoMarkers(original, origStart);
+    if (result.text !== original) {
+      const delta = (result.cursor !== undefined ? result.cursor : origStart) - origStart;
+      $editor.value = result.text;
+      const newStart = (result.cursor !== undefined ? result.cursor : origStart);
+      $editor.selectionStart = newStart;
+      $editor.selectionEnd = origEnd + delta;
+    }
+    renderPreview($editor.value);
+    autoresize();
+    updateDropOverlay();
+    const dirty = getFullContent() !== state.lastSavedContent;
+    setStatus((state.currentFileName || 'memo') + (dirty ? ' •' : ''));
+  }
+
+  function autoresize() {
+    $editor.style.height = 'auto';
+    const minH = $wrap.clientHeight - 32 - 80;
+    const contentH = $editor.scrollHeight;
+    $editor.style.height = Math.max(minH, contentH) + 'px';
+  }
+
+  function updateDropOverlay() {
+    const empty = $editor.value === '';
+    $dropOverlay.classList.toggle('active', empty);
+    $dropZone.style.display = empty ? '' : 'none';
+  }
+
+  // ====== Enter key: indent inheritance ======
+  // IME (日本語入力) 確定の Enter を除外するため isComposing を必ずチェック
+  $editor.addEventListener('keydown', (e) => {
+    if ((e.metaKey || e.ctrlKey) && (e.key === 's' || e.key === 'S')) {
+      e.preventDefault();
+      manualSave();
+      return;
+    }
+    if (e.isComposing || e.keyCode === 229) return;
+
+    if (e.key === 'Enter' && !e.shiftKey) {
+      const v = $editor.value;
+      const pos = $editor.selectionStart;
+      const lineStart = v.lastIndexOf('\n', pos - 1) + 1;
+      const lineEnd = v.indexOf('\n', pos);
+      const curLine = v.slice(lineStart, lineEnd === -1 ? v.length : lineEnd);
+      let indent = '';
+      for (let i = 0; i < curLine.length; i++) {
+        if (curLine[i] === FULL_SPACE) indent += FULL_SPACE;
+        else break;
+      }
+      if (indent.length > 0) {
+        e.preventDefault();
+        const before = v.slice(0, pos);
+        const after = v.slice($editor.selectionEnd);
+        const insert = '\n' + indent;
+        $editor.value = before + insert + after;
+        const newPos = pos + insert.length;
+        $editor.selectionStart = $editor.selectionEnd = newPos;
+        onTextChanged();
+      }
+    }
+  });
+
+  // IME 入力中の処理
+  let composing = false;
+  $editor.addEventListener('compositionstart', () => { composing = true; });
+  $editor.addEventListener('compositionend', () => {
+    composing = false;
+    onTextChanged();
+  });
+  $editor.addEventListener('input', (e) => {
+    if (composing) {
+      renderPreview($editor.value);
+      autoresize();
+      return;
+    }
+    onTextChanged();
+  });
+  window.addEventListener('resize', autoresize);
+
+  // ====== Preview clicks ======
+  $preview.addEventListener('click', (e) => {
+    const t = e.target;
+    if (t.classList.contains('toggle')) {
+      const idx = parseInt(t.dataset.line, 10);
+      if (!Number.isNaN(idx)) toggleFold(idx);
+      return;
+    }
+    if (t.classList.contains('link')) {
+      const url = t.dataset.url;
+      if (url) window.open(url, '_blank', 'noopener,noreferrer');
+      return;
+    }
+  });
+
+  // ============================================================
+  // Drag & drop
+  // ============================================================
+  function setupDragDrop() {
+    const onDragOver = (e) => {
+      if ($editor.value !== '') return;
+      e.preventDefault();
+      $dropZone.classList.add('dragover');
+    };
+    const onDragLeave = () => $dropZone.classList.remove('dragover');
+    const onDrop = async (e) => {
+      $dropZone.classList.remove('dragover');
+      if ($editor.value !== '') return;
+      e.preventDefault();
+      const items = e.dataTransfer.items;
+      let file = null;
+      if (items && items.length > 0) {
+        for (const it of items) {
+          if (it.kind === 'file') {
+            file = it.getAsFile();
+            break;
+          }
+        }
+      }
+      if (!file && e.dataTransfer.files && e.dataTransfer.files.length > 0) {
+        file = e.dataTransfer.files[0];
+      }
+      if (!file) return;
+      if (!file.name.toLowerCase().endsWith('.txt')) {
+        toast('.txt ファイルのみ読み込めます', true);
+        return;
+      }
+      try {
+        const text = await file.text();
+        state.currentFileName = file.name;
+        const ingested = ingestFoldedFromText(text);
+        const result = applyAutoMarkers(ingested);
+        $editor.value = result.text;
+        state.lastSavedContent = text;
+        state.lastAutoSavedContent = text;
+        onTextChanged();
+        toast(`${file.name} を開きました`);
+      } catch (err) {
+        toast('読み込み失敗: ' + err.message, true);
+      }
+    };
+    document.addEventListener('dragover', onDragOver);
+    document.addEventListener('dragleave', onDragLeave);
+    document.addEventListener('drop', onDrop);
+  }
+
+  // ============================================================
+  // Save
+  // ============================================================
+  async function pickBaseDir() {
+    if (!state.fsApiAvailable) {
+      state.fallbackMode = true;
+      toast('このブラウザ/環境ではフォルダ選択が使えません。ダウンロード保存にフォールバックします。');
+      return null;
+    }
+    try {
+      const h = await window.showDirectoryPicker({ mode: 'readwrite' });
+      const perm = await h.queryPermission({ mode: 'readwrite' });
+      if (perm !== 'granted') {
+        const p2 = await h.requestPermission({ mode: 'readwrite' });
+        if (p2 !== 'granted') {
+          toast('書き込み権限が拒否されました', true);
+          return null;
+        }
+      }
+      state.baseDirHandle = h;
+      await idbSet('baseDir', h);
+      toast(`保存先: ${h.name}`);
+      return h;
+    } catch (err) {
+      if (err.name === 'AbortError') return null;
+      console.error(err);
+      state.fallbackMode = true;
+      toast('フォルダ選択に失敗。ダウンロード保存にフォールバックします。', true);
+      return null;
+    }
+  }
+
+  async function ensureBaseDir() {
+    if (state.baseDirHandle) {
+      try {
+        const perm = await state.baseDirHandle.queryPermission({ mode: 'readwrite' });
+        if (perm === 'granted') return state.baseDirHandle;
+        const p2 = await state.baseDirHandle.requestPermission({ mode: 'readwrite' });
+        if (p2 === 'granted') return state.baseDirHandle;
+      } catch (e) {/* fallthrough */}
+    }
+    return await pickBaseDir();
+  }
+
+  async function writeFile(dirHandle, subPath, filename, content) {
+    let cur = dirHandle;
+    for (const seg of subPath) {
+      cur = await cur.getDirectoryHandle(seg, { create: true });
+    }
+    const fh = await cur.getFileHandle(filename, { create: true });
+    const w = await fh.createWritable();
+    await w.write(content);
+    await w.close();
+  }
+
+  function defaultFileName() {
+    if (state.currentFileName) return state.currentFileName;
+    const { ymd } = dateFolders();
+    return `memo_${ymd}.txt`;
+  }
+
+  let baseDirWarnedOnce = false;
+  async function autoSave() {
+    const content = getFullContent();
+    if (content === '' || content === state.lastAutoSavedContent) return;
+    if (!state.baseDirHandle && !state.fallbackMode) {
+      if (state.fsApiAvailable && !baseDirWarnedOnce) {
+        toast('保存先未設定です。右下 📁 から選択してください', true);
+        baseDirWarnedOnce = true;
+      }
+      return;
+    }
+    const fname = defaultFileName();
+    const stamp = nowStamp();
+    const { ym, day } = dateFolders();
+    const saveName = `${stamp}_${fname}`;
+    if (state.fallbackMode || !state.fsApiAvailable) {
+      downloadFile(saveName, content);
+      state.lastAutoSavedContent = content;
+      toast(`自動保存(DL): ${saveName}`);
+      return;
+    }
+    try {
+      const base = await ensureBaseDir();
+      if (!base) return;
+      await writeFile(base, [ym, day], saveName, content);
+      state.lastAutoSavedContent = content;
+      const t = new Date();
+      setStatus(`${state.currentFileName || 'memo'} • 自動保存 ${pad(t.getHours())}:${pad(t.getMinutes())}`);
+    } catch (err) {
+      console.error('autoSave failed:', err);
+    }
+  }
+
+  async function manualSave() {
+    const content = getFullContent();
+    if (content === '') { toast('空のため保存しません'); return; }
+    const fname = defaultFileName();
+    const stamp = nowStamp();
+    const { ym, day } = dateFolders();
+    const saveName = `【saved】${stamp}_${fname}`;
+    $btnSave.classList.add('saving');
+    try {
+      if (state.fallbackMode || !state.fsApiAvailable) {
+        downloadFile(saveName, content);
+        toast(`保存(DL): ${saveName}`);
+      } else {
+        const base = await ensureBaseDir();
+        if (!base) { $btnSave.classList.remove('saving'); return; }
+        await writeFile(base, [ym, day], saveName, content);
+        toast(`保存: ${ym}/${day}/${saveName}`);
+      }
+      state.lastSavedContent = content;
+      state.lastAutoSavedContent = content;
+      onTextChanged();
+    } catch (err) {
+      console.error(err);
+      toast('保存失敗: ' + err.message, true);
+    } finally {
+      setTimeout(() => $btnSave.classList.remove('saving'), 400);
+    }
+  }
+
+  function downloadFile(name, content) {
+    const blob = new Blob([content], { type: 'text/plain;charset=utf-8' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = name;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+  }
+
+  // ============================================================
+  // Theme
+  // ============================================================
+  function applyTheme(t) {
+    state.theme = t;
+    document.body.setAttribute('data-theme', t);
+    localStorage.setItem('theme', t);
+  }
+  $btnTheme.addEventListener('click', () => {
+    applyTheme(state.theme === 'dark' ? 'light' : 'dark');
+  });
+
+  // ============================================================
+  // Buttons
+  // ============================================================
+  $btnSave.addEventListener('click', manualSave);
+  $btnFolder.addEventListener('click', async () => {
+    await pickBaseDir();
+  });
+
+  // ============================================================
+  // Init
+  // ============================================================
+  async function init() {
+    applyTheme(state.theme);
+    setupDragDrop();
+    try {
+      const h = await idbGet('baseDir');
+      if (h) state.baseDirHandle = h;
+    } catch (e) {/* ignore */}
+    onTextChanged();
+    state.autosaveTimer = setInterval(autoSave, AUTOSAVE_INTERVAL_MS);
+
+    window.addEventListener('beforeunload', (e) => {
+      const cur = getFullContent();
+      if (cur !== state.lastSavedContent && cur !== '') {
+        e.preventDefault();
+        e.returnValue = '';
+      }
+    });
+
+    $editor.focus();
+  }
+
+  init();
+})();
+</script>
+</body>
+</html>
